@@ -1,0 +1,14 @@
+[project]
+name = "ComfyUI-AnimaArtistBlend"
+description = "Blend multiple artist tags in Qwen3 0.6B hidden-state space for Anima (private test)"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/seren-alegro/ComfyUI-AnimaArtistBlend"
+
+[tool.comfy]
+PublisherId = "seren"
+DisplayName = "Anima Artist Blend"
+Icon = ""
