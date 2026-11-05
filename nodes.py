@@ -56,6 +56,21 @@ Never put two artist tags in the same encoding pass.
   encodes the artist tag ALONE and pools its whole sequence, so the
   vector is dominated by the artist itself. The deviation percentage
   printed in the log is the check: it should jump well above ~20%.
+  (Pod result: 35.0% — purer, yet the image still barely moved, while
+  ``full_average`` visibly shifted the whole tone. Fabricated vectors
+  appended to the sequence appear to be out-of-format for the DiT.)
+
+* ``adapter_delta`` mode (v0.5): follows the Adapter Mixer approach
+  published by An1X3R's Anima-Artist-Mixer (formula as described in
+  its README; this is an independent implementation, no code copied).
+  Each artist is encoded as a PREFIX (``artist + base``), so every base
+  row is read under that artist's context. The per-row artist mean
+  minus the base encoding is the delta; only its component
+  PERPENDICULAR to the base row is added back, scaled by ``strength``:
+  ``mixed = base + strength * perp(mean_i(artist_i) - base, base)``.
+  The sequence keeps the base length — nothing is pooled and no
+  virtual token is appended, so the result stays in the exact format
+  the DiT was trained to read.
 
 Assumptions to verify on a real install (private test):
 * ``clip.encode_from_tokens_scheduled(clip.tokenize(text))`` returns
@@ -146,7 +161,7 @@ class AnimaArtistHiddenBlend:
             "clip": ("CLIP",),
             "base_prompt": ("STRING", {"multiline": True, "default": ""}),
             "blend_mode": (["pooled_token", "full_average",
-                            "per_artist_tokens"],),
+                            "per_artist_tokens", "adapter_delta"],),
             "sharpen": ("FLOAT", {"default": 1.0, "min": 0.5, "max": 3.0,
                                   "step": 0.1}),
             "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0,
@@ -203,6 +218,10 @@ class AnimaArtistHiddenBlend:
             return (self._per_artist_tokens(clip, base_prompt, artists,
                                             weights, full_text, strength,
                                             deviation_gain, extract_mode),)
+
+        if blend_mode == "adapter_delta":
+            return (self._adapter_delta(clip, base_prompt, artists,
+                                        weights, strength),)
 
         return (self._pooled_token(clip, base_prompt, artists, weights,
                                    full_text, strength, deviation_gain,
@@ -332,6 +351,50 @@ class AnimaArtistHiddenBlend:
         if pooled is not None:
             out_extra["pooled_output"] = pooled
         return [[blended, out_extra]]
+
+
+    # -- adapter delta mode --------------------------------------------
+    def _adapter_delta(self, clip, base_prompt, artists, weights, strength):
+        base_tensor, base_extra = _encode(clip, base_prompt)
+        base_len = base_tensor.shape[1]
+
+        aligned, extras = [], []
+        for artist in artists:
+            # Artist FIRST: the base rows of this pass are the base as
+            # read under the artist's context (causal encoder), and the
+            # prefix length gives exact row alignment for free.
+            tensor, extra = _encode(clip, f"{artist}, {base_prompt}")
+            span_len = tensor.shape[1] - base_len
+            if span_len < 1:
+                raise ValueError(
+                    f"AnimaArtistBlend: no prefix span detected for "
+                    f"'{artist}'.")
+            print(f"[AnimaArtistBlend] '{artist}': prefix span = "
+                  f"{span_len} tokens (total {tensor.shape[1]}, "
+                  f"base {base_len})")
+            aligned.append(tensor[:, span_len:span_len + base_len, :])
+            extras.append(extra)
+
+        total_w = sum(weights)
+        mean = sum(t * (w / total_w)
+                   for t, w in zip(aligned, weights))
+        delta = mean - base_tensor
+
+        base_norm = base_tensor.norm(dim=-1, keepdim=True)
+        unit = base_tensor / base_norm.clamp_min(1e-12)
+        parallel = (delta * unit).sum(dim=-1, keepdim=True) * unit
+        perp = delta - parallel
+        mixed = base_tensor + strength * perp
+
+        d = float(delta.norm(dim=-1).mean())
+        b = float(base_norm.mean())
+        p = float(perp.norm(dim=-1).mean())
+        print(f"[AnimaArtistBlend] adapter delta: |delta| is "
+              f"{100.0 * d / max(b, 1e-12):.1f}% of |base|, "
+              f"perpendicular share "
+              f"{100.0 * p / max(d, 1e-12):.1f}%")
+        return _conditioning(mixed, _pooled_of(extras[0], base_extra),
+                             base_extra)
 
 
 NODE_CLASS_MAPPINGS = {

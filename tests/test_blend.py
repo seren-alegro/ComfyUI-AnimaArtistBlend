@@ -176,3 +176,37 @@ def test_isolated_per_artist_appends_n_tokens():
     tensor, _ = _run([("artist_a", 1.0), ("artist_b", 1.0)],
                      mode="per_artist_tokens", extract="isolated")
     assert tensor.shape[1] == 2 + 2
+
+
+def test_adapter_delta_keeps_base_length():
+    tensor, _ = _run([("artist_a", 1.0), ("artist_b", 1.0)],
+                     mode="adapter_delta")
+    base_only, _ = _run([])
+    assert tensor.shape == base_only.shape
+
+
+def _run_strength(artists_weights, strength):
+    node = _node()
+    kwargs = {}
+    for i, (name, w) in enumerate(artists_weights, start=1):
+        kwargs[f"artist_{i}"] = name
+        kwargs[f"weight_{i}"] = w
+    (result,) = node.blend(MockClip(), "1girl, solo", "adapter_delta",
+                           1.0, strength, **kwargs)
+    return result[0][0]
+
+
+def test_adapter_delta_strength_zero_is_base():
+    out = _run_strength([("artist_a", 1.0)], 0.0)
+    base_only, _ = _run([])
+    assert torch.allclose(out, base_only)
+
+
+def test_adapter_delta_change_is_perpendicular_to_base():
+    out = _run_strength([("artist_a", 1.0), ("artist_b", 1.0)], 1.0)
+    base_only, _ = _run([])
+    change = out - base_only
+    dots = (change * base_only).sum(dim=-1).abs()
+    scale = change.norm(dim=-1) * base_only.norm(dim=-1)
+    assert torch.all(dots <= scale * 1e-3 + 1e-6)
+    assert float(change.norm()) > 0.0

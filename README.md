@@ -27,6 +27,13 @@ Node: **Anima Artist Blend (Qwen hidden states)**
   vectors are blended and appended as a single *virtual artist token*.
 - `full_average` mode: norm-restored weighted average of the whole
   sequences — the classic conditioning average, kept as an A/B baseline.
+- `adapter_delta` mode (v0.5): each artist is encoded as a prefix, so
+  the base rows are read under that artist's context; per row, only the
+  component of (artist mean − base) perpendicular to the base row is
+  added back, scaled by `strength`. No pooling, no appended tokens —
+  the base sequence is modified in place. Approach follows the Adapter
+  Mixer formula published in An1X3R's Anima-Artist-Mixer README;
+  independent implementation, no code copied.
 - `sharpen` (default 1.0): exponent applied to the weights before
   normalising. Above 1.0 it counteracts the "average grey style"
   collapse when blending 5+ artists.
