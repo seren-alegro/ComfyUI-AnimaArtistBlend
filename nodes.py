@@ -95,8 +95,13 @@ def _blend_vectors(vectors, weights):
 
 
 def _blend_pooled(extras, weights):
-    """Blend 'pooled_output' across encoding results when present."""
-    vecs = [e["pooled_output"] for e in extras if "pooled_output" in e]
+    """Blend 'pooled_output' across encoding results when present.
+
+    An encoder with no pooled output (Anima's Qwen3 TE on ComfyUI 0.44)
+    still carries the key with a None value, so None counts as absent.
+    """
+    vecs = [e["pooled_output"] for e in extras
+            if e.get("pooled_output") is not None]
     if not vecs or len(vecs) != len(extras):
         return None
     # pooled outputs may be [1, D]; give _blend_vectors a 3D view.

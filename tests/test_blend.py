@@ -111,3 +111,20 @@ def test_no_artist_is_plain_encode():
     expected, _ = clip.encode_from_tokens_scheduled(
         clip.tokenize("1girl, solo"))[0]
     assert torch.equal(tensor, expected)
+
+
+# ---------- pooled_output handling (pod regression, 2026-11-05) ----------
+
+from nodes import _blend_pooled  # noqa: E402
+
+
+def test_blend_pooled_none_values_are_absent():
+    # Anima's Qwen3 TE returns pooled_output=None; the old code crashed
+    # with AttributeError: 'NoneType' object has no attribute 'dim'.
+    extras = [{"pooled_output": None}, {"pooled_output": None}]
+    assert _blend_pooled(extras, [0.5, 0.5]) is None
+
+
+def test_blend_pooled_mixed_none_skips():
+    extras = [{"pooled_output": torch.ones(1, 4)}, {"pooled_output": None}]
+    assert _blend_pooled(extras, [0.5, 0.5]) is None
