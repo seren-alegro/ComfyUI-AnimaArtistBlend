@@ -60,7 +60,7 @@ class MockClip:
         return [[tensor, {"pooled_output": pooled}]]
 
 
-def _run(artists_weights, mode="pooled_token", sharpen=1.0):
+def _run(artists_weights, mode="pooled_token", sharpen=1.0, gain=1.0):
     node = AnimaArtistHiddenBlend()
     kwargs = {}
     for i in range(1, 9):
@@ -69,7 +69,7 @@ def _run(artists_weights, mode="pooled_token", sharpen=1.0):
         else:
             kwargs[f"artist_{i}"], kwargs[f"weight_{i}"] = "", 1.0
     (result,) = node.blend(MockClip(), "1girl, solo", mode, sharpen, 1.0,
-                           **kwargs)
+                           deviation_gain=gain, **kwargs)
     return result[0]
 
 
@@ -128,3 +128,16 @@ def test_blend_pooled_none_values_are_absent():
 def test_blend_pooled_mixed_none_skips():
     extras = [{"pooled_output": torch.ones(1, 4)}, {"pooled_output": None}]
     assert _blend_pooled(extras, [0.5, 0.5]) is None
+
+
+def test_deviation_gain_separates_weightings():
+    # Pod finding (2026-11-05): swapping one artist barely moved the
+    # image. With deviation gain, two blends that differ only in which
+    # artist dominates must land farther apart than at gain 1.
+    a1, _ = _run([("artist_a", 3.0), ("artist_b", 1.0)], gain=1.0)
+    b1, _ = _run([("artist_a", 1.0), ("artist_b", 3.0)], gain=1.0)
+    a3, _ = _run([("artist_a", 3.0), ("artist_b", 1.0)], gain=3.0)
+    b3, _ = _run([("artist_a", 1.0), ("artist_b", 3.0)], gain=3.0)
+    d1 = (a1[:, -1, :] - b1[:, -1, :]).norm().item()
+    d3 = (a3[:, -1, :] - b3[:, -1, :]).norm().item()
+    assert d3 > d1

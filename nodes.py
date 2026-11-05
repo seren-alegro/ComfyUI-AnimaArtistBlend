@@ -24,6 +24,14 @@ Never put two artist tags in the same encoding pass.
   to the base sequence as ONE virtual artist token. Downstream there is
   nothing left to compete.
 
+  ``deviation_gain`` (v0.2): pooled artist vectors share a large common
+  component (roughly "an artist tag is here"), while each artist's own
+  signature lives in the small deviation from the cross-artist mean.
+  Before blending, each vector's deviation from that mean is multiplied
+  by this gain, so swapping or re-weighting artists actually moves the
+  result. 1.0 reproduces the v0.1 behaviour. Pod tests (2026-11-05)
+  showed nardack<->fuzichoco swaps were nearly invisible at gain 1.
+
 * ``full_average`` mode (baseline for A/B testing):
   Encode each ``base_prompt + artist_i`` and take a norm-restored
   weighted average of the whole sequences (zero-padded to the longest).
@@ -121,6 +129,8 @@ class AnimaArtistHiddenBlend:
             "blend_mode": (["pooled_token", "full_average"],),
             "sharpen": ("FLOAT", {"default": 1.0, "min": 0.5, "max": 3.0,
                                   "step": 0.1}),
+            "deviation_gain": ("FLOAT", {"default": 2.0, "min": 1.0,
+                                         "max": 5.0, "step": 0.25}),
             "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0,
                                    "step": 0.05}),
         }
@@ -135,7 +145,8 @@ class AnimaArtistHiddenBlend:
     FUNCTION = "blend"
     CATEGORY = "conditioning/anima"
 
-    def blend(self, clip, base_prompt, blend_mode, sharpen, strength, **kwargs):
+    def blend(self, clip, base_prompt, blend_mode, sharpen, strength,
+              deviation_gain=2.0, **kwargs):
         artists, raw_weights = [], []
         for i in range(1, MAX_ARTISTS + 1):
             tag = (kwargs.get(f"artist_{i}") or "").strip()
@@ -165,11 +176,11 @@ class AnimaArtistHiddenBlend:
                                        strength),)
 
         return (self._pooled_token(clip, base_prompt, artists, weights,
-                                   full_text, strength),)
+                                   full_text, strength, deviation_gain),)
 
     # -- mode 1: pooled virtual artist token -------------------------
     def _pooled_token(self, clip, base_prompt, artists, weights, full_text,
-                      strength):
+                      strength, deviation_gain=2.0):
         base_tensor, base_extra = _encode(clip, base_prompt)
         base_len = base_tensor.shape[1]
 
@@ -190,6 +201,17 @@ class AnimaArtistHiddenBlend:
                   f"{span.shape[1]} (total {tensor.shape[1]}, base "
                   f"{base_len})")
             pooled_vecs.append(span.mean(dim=1, keepdim=True))
+
+        if deviation_gain != 1.0 and len(pooled_vecs) > 1:
+            stacked = torch.stack(pooled_vecs, dim=0)
+            mean_vec = stacked.mean(dim=0)
+            dev_ratio = ((stacked - mean_vec).norm(dim=-1)
+                         / mean_vec.norm(dim=-1).clamp(min=1e-12)).mean()
+            print(f"[AnimaArtistBlend] deviation gain "
+                  f"{deviation_gain}: artist deviation is "
+                  f"{float(dev_ratio) * 100:.1f}% of the shared component")
+            pooled_vecs = [mean_vec + (v - mean_vec) * float(deviation_gain)
+                           for v in pooled_vecs]
 
         blended = _blend_vectors(pooled_vecs, weights) * float(strength)
         final = torch.cat([base_tensor, blended], dim=1)
