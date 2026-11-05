@@ -393,8 +393,11 @@ class AnimaArtistHiddenBlend:
               f"{100.0 * d / max(b, 1e-12):.1f}% of |base|, "
               f"perpendicular share "
               f"{100.0 * p / max(d, 1e-12):.1f}%")
-        return _conditioning(mixed, _pooled_of(extras[0], base_extra),
-                             base_extra)
+        out_extra = dict(base_extra)
+        pooled = _blend_pooled(extras, weights)
+        if pooled is not None:
+            out_extra["pooled_output"] = pooled
+        return [[mixed, out_extra]]
 
 
 NODE_CLASS_MAPPINGS = {
