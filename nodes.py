@@ -129,8 +129,6 @@ class AnimaArtistHiddenBlend:
             "blend_mode": (["pooled_token", "full_average"],),
             "sharpen": ("FLOAT", {"default": 1.0, "min": 0.5, "max": 3.0,
                                   "step": 0.1}),
-            "deviation_gain": ("FLOAT", {"default": 2.0, "min": 1.0,
-                                         "max": 5.0, "step": 0.25}),
             "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0,
                                    "step": 0.05}),
         }
@@ -138,6 +136,11 @@ class AnimaArtistHiddenBlend:
             required[f"artist_{i}"] = ("STRING", {"default": ""})
             required[f"weight_{i}"] = ("FLOAT", {"default": 1.0, "min": 0.0,
                                                  "max": 3.0, "step": 0.05})
+        # Appended last on purpose: ComfyUI restores saved widget values
+        # positionally, so a new input in the middle would shift every
+        # value after it in workflows saved with older versions.
+        required["deviation_gain"] = ("FLOAT", {"default": 2.0, "min": 1.0,
+                                                "max": 5.0, "step": 0.25})
         return {"required": required}
 
     RETURN_TYPES = ("CONDITIONING",)
