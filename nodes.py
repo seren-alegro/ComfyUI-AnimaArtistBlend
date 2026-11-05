@@ -48,6 +48,15 @@ Never put two artist tags in the same encoding pass.
   its relative weight (the strongest artist keeps its natural norm),
   so the DiT can attend to each artist separately.
 
+* ``extract_mode`` (v0.4): how each artist vector is obtained.
+  ``contextual`` encodes ``base + artist`` and pools the trailing span:
+  that vector is mostly a summary of the whole prompt (the artist is
+  only ~20% of it, measured on the pod), so even several such tokens
+  repeat the same summary and the image barely moves. ``isolated``
+  encodes the artist tag ALONE and pools its whole sequence, so the
+  vector is dominated by the artist itself. The deviation percentage
+  printed in the log is the check: it should jump well above ~20%.
+
 Assumptions to verify on a real install (private test):
 * ``clip.encode_from_tokens_scheduled(clip.tokenize(text))`` returns
   ``[[tensor, dict], ...]`` as in stock CLIPTextEncode.
@@ -152,6 +161,7 @@ class AnimaArtistHiddenBlend:
         # value after it in workflows saved with older versions.
         required["deviation_gain"] = ("FLOAT", {"default": 2.0, "min": 1.0,
                                                 "max": 5.0, "step": 0.25})
+        required["extract_mode"] = (["contextual", "isolated"],)
         return {"required": required}
 
     RETURN_TYPES = ("CONDITIONING",)
@@ -160,7 +170,7 @@ class AnimaArtistHiddenBlend:
     CATEGORY = "conditioning/anima"
 
     def blend(self, clip, base_prompt, blend_mode, sharpen, strength,
-              deviation_gain=2.0, **kwargs):
+              deviation_gain=2.0, extract_mode="contextual", **kwargs):
         artists, raw_weights = [], []
         for i in range(1, MAX_ARTISTS + 1):
             tag = (kwargs.get(f"artist_{i}") or "").strip()
@@ -192,15 +202,26 @@ class AnimaArtistHiddenBlend:
         if blend_mode == "per_artist_tokens":
             return (self._per_artist_tokens(clip, base_prompt, artists,
                                             weights, full_text, strength,
-                                            deviation_gain),)
+                                            deviation_gain, extract_mode),)
 
         return (self._pooled_token(clip, base_prompt, artists, weights,
-                                   full_text, strength, deviation_gain),)
+                                   full_text, strength, deviation_gain,
+                                   extract_mode),)
 
     # -- shared helpers ------------------------------------------------
     @staticmethod
-    def _artist_pooled(clip, base_len, artist, full_text):
-        """Encode one artist pass; return (pooled span vector, extra)."""
+    def _artist_pooled(clip, base_len, artist, full_text,
+                       extract_mode="contextual"):
+        """Encode one artist; return (pooled artist vector, extra).
+
+        contextual: encode base+artist, pool the trailing span.
+        isolated: encode the artist tag alone, pool its whole sequence.
+        """
+        if extract_mode == "isolated":
+            tensor, extra = _encode(clip, artist)
+            print(f"[AnimaArtistBlend] '{artist}': isolated span = "
+                  f"{tensor.shape[1]} tokens (whole pass)")
+            return tensor.mean(dim=1, keepdim=True), extra
         tensor, extra = _encode(clip, full_text(artist))
         if tensor.shape[1] > base_len:
             span = tensor[:, base_len:, :]
@@ -232,14 +253,15 @@ class AnimaArtistHiddenBlend:
 
     # -- mode 1: pooled virtual artist token -------------------------
     def _pooled_token(self, clip, base_prompt, artists, weights, full_text,
-                      strength, deviation_gain=2.0):
+                      strength, deviation_gain=2.0,
+                      extract_mode="contextual"):
         base_tensor, base_extra = _encode(clip, base_prompt)
         base_len = base_tensor.shape[1]
 
         pooled_vecs, extras = [], []
         for artist in artists:
             vec, extra = self._artist_pooled(clip, base_len, artist,
-                                             full_text)
+                                             full_text, extract_mode)
             pooled_vecs.append(vec)
             extras.append(extra)
 
@@ -256,14 +278,15 @@ class AnimaArtistHiddenBlend:
 
     # -- mode 3: one virtual token per artist --------------------------
     def _per_artist_tokens(self, clip, base_prompt, artists, weights,
-                           full_text, strength, deviation_gain=2.0):
+                           full_text, strength, deviation_gain=2.0,
+                           extract_mode="contextual"):
         base_tensor, base_extra = _encode(clip, base_prompt)
         base_len = base_tensor.shape[1]
 
         pooled_vecs, extras = [], []
         for artist in artists:
             vec, extra = self._artist_pooled(clip, base_len, artist,
-                                             full_text)
+                                             full_text, extract_mode)
             pooled_vecs.append(vec)
             extras.append(extra)
 

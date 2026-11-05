@@ -60,7 +60,8 @@ class MockClip:
         return [[tensor, {"pooled_output": pooled}]]
 
 
-def _run(artists_weights, mode="pooled_token", sharpen=1.0, gain=1.0):
+def _run(artists_weights, mode="pooled_token", sharpen=1.0, gain=1.0,
+         extract="contextual"):
     node = AnimaArtistHiddenBlend()
     kwargs = {}
     for i in range(1, 9):
@@ -69,7 +70,8 @@ def _run(artists_weights, mode="pooled_token", sharpen=1.0, gain=1.0):
         else:
             kwargs[f"artist_{i}"], kwargs[f"weight_{i}"] = "", 1.0
     (result,) = node.blend(MockClip(), "1girl, solo", mode, sharpen, 1.0,
-                           deviation_gain=gain, **kwargs)
+                           deviation_gain=gain, extract_mode=extract,
+                           **kwargs)
     return result[0]
 
 
@@ -160,3 +162,17 @@ def test_per_artist_tokens_are_distinct():
     tensor, _ = _run([("artist_a", 1.0), ("artist_b", 1.0)],
                      mode="per_artist_tokens")
     assert not torch.allclose(tensor[:, 2, :], tensor[:, 3, :])
+
+
+def test_isolated_pooled_token_shape_and_prefix():
+    tensor, _ = _run([("artist_a", 1.0), ("artist_b", 1.0)],
+                     extract="isolated")
+    assert tensor.shape[1] == 2 + 1
+    base_only, _ = _run([])
+    assert torch.allclose(tensor[:, :2, :], base_only[:, :2, :])
+
+
+def test_isolated_per_artist_appends_n_tokens():
+    tensor, _ = _run([("artist_a", 1.0), ("artist_b", 1.0)],
+                     mode="per_artist_tokens", extract="isolated")
+    assert tensor.shape[1] == 2 + 2
