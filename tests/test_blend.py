@@ -141,3 +141,22 @@ def test_deviation_gain_separates_weightings():
     d1 = (a1[:, -1, :] - b1[:, -1, :]).norm().item()
     d3 = (a3[:, -1, :] - b3[:, -1, :]).norm().item()
     assert d3 > d1
+
+
+def test_per_artist_tokens_appends_one_per_artist():
+    tensor, _ = _run([("artist_a", 1.0), ("artist_b", 1.0),
+                      ("artist_c", 1.0)], mode="per_artist_tokens")
+    assert tensor.shape[1] == 2 + 3  # base tokens + one per artist
+
+
+def test_per_artist_tokens_base_prefix_unchanged():
+    blended, _ = _run([("artist_a", 2.0), ("artist_b", 1.0)],
+                      mode="per_artist_tokens")
+    base_only, _ = _run([])
+    assert torch.allclose(blended[:, :2, :], base_only[:, :2, :])
+
+
+def test_per_artist_tokens_are_distinct():
+    tensor, _ = _run([("artist_a", 1.0), ("artist_b", 1.0)],
+                     mode="per_artist_tokens")
+    assert not torch.allclose(tensor[:, 2, :], tensor[:, 3, :])

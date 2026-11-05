@@ -38,6 +38,16 @@ Never put two artist tags in the same encoding pass.
   This is the classic conditioning-average behaviour, kept so the test
   can compare the two strategies with the same seed.
 
+* ``per_artist_tokens`` mode (v0.3):
+  Pod tests showed the single blended token carries a healthy artist
+  deviation (~20% of the shared component, gain 3 included) yet barely
+  moves the image: one token appended after a ~115-token base sequence
+  gets too little cross-attention. This mode therefore appends ONE
+  virtual token PER artist instead of blending them into one. Each
+  token is that artist's deviation-amplified pooled vector, scaled by
+  its relative weight (the strongest artist keeps its natural norm),
+  so the DiT can attend to each artist separately.
+
 Assumptions to verify on a real install (private test):
 * ``clip.encode_from_tokens_scheduled(clip.tokenize(text))`` returns
   ``[[tensor, dict], ...]`` as in stock CLIPTextEncode.
@@ -126,7 +136,8 @@ class AnimaArtistHiddenBlend:
         required = {
             "clip": ("CLIP",),
             "base_prompt": ("STRING", {"multiline": True, "default": ""}),
-            "blend_mode": (["pooled_token", "full_average"],),
+            "blend_mode": (["pooled_token", "full_average",
+                            "per_artist_tokens"],),
             "sharpen": ("FLOAT", {"default": 1.0, "min": 0.5, "max": 3.0,
                                   "step": 0.1}),
             "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0,
@@ -178,8 +189,46 @@ class AnimaArtistHiddenBlend:
             return (self._full_average(clip, artists, weights, full_text,
                                        strength),)
 
+        if blend_mode == "per_artist_tokens":
+            return (self._per_artist_tokens(clip, base_prompt, artists,
+                                            weights, full_text, strength,
+                                            deviation_gain),)
+
         return (self._pooled_token(clip, base_prompt, artists, weights,
                                    full_text, strength, deviation_gain),)
+
+    # -- shared helpers ------------------------------------------------
+    @staticmethod
+    def _artist_pooled(clip, base_len, artist, full_text):
+        """Encode one artist pass; return (pooled span vector, extra)."""
+        tensor, extra = _encode(clip, full_text(artist))
+        if tensor.shape[1] > base_len:
+            span = tensor[:, base_len:, :]
+        else:
+            # Fallback: tokeniser merged things unexpectedly; use the
+            # last token rather than failing the whole graph.
+            span = tensor[:, -1:, :]
+            print(f"[AnimaArtistBlend] WARNING: '{artist}' produced no "
+                  f"extra tokens (len={tensor.shape[1]}, base_len="
+                  f"{base_len}); using last token as its span.")
+        print(f"[AnimaArtistBlend] '{artist}': span tokens = "
+              f"{span.shape[1]} (total {tensor.shape[1]}, base "
+              f"{base_len})")
+        return span.mean(dim=1, keepdim=True), extra
+
+    @staticmethod
+    def _amplify_deviation(pooled_vecs, deviation_gain):
+        if deviation_gain == 1.0 or len(pooled_vecs) <= 1:
+            return pooled_vecs
+        stacked = torch.stack(pooled_vecs, dim=0)
+        mean_vec = stacked.mean(dim=0)
+        dev_ratio = ((stacked - mean_vec).norm(dim=-1)
+                     / mean_vec.norm(dim=-1).clamp(min=1e-12)).mean()
+        print(f"[AnimaArtistBlend] deviation gain "
+              f"{deviation_gain}: artist deviation is "
+              f"{float(dev_ratio) * 100:.1f}% of the shared component")
+        return [mean_vec + (v - mean_vec) * float(deviation_gain)
+                for v in pooled_vecs]
 
     # -- mode 1: pooled virtual artist token -------------------------
     def _pooled_token(self, clip, base_prompt, artists, weights, full_text,
@@ -189,35 +238,44 @@ class AnimaArtistHiddenBlend:
 
         pooled_vecs, extras = [], []
         for artist in artists:
-            tensor, extra = _encode(clip, full_text(artist))
+            vec, extra = self._artist_pooled(clip, base_len, artist,
+                                             full_text)
+            pooled_vecs.append(vec)
             extras.append(extra)
-            if tensor.shape[1] > base_len:
-                span = tensor[:, base_len:, :]
-            else:
-                # Fallback: tokeniser merged things unexpectedly; use the
-                # last token rather than failing the whole graph.
-                span = tensor[:, -1:, :]
-                print(f"[AnimaArtistBlend] WARNING: '{artist}' produced no "
-                      f"extra tokens (len={tensor.shape[1]}, base_len="
-                      f"{base_len}); using last token as its span.")
-            print(f"[AnimaArtistBlend] '{artist}': span tokens = "
-                  f"{span.shape[1]} (total {tensor.shape[1]}, base "
-                  f"{base_len})")
-            pooled_vecs.append(span.mean(dim=1, keepdim=True))
 
-        if deviation_gain != 1.0 and len(pooled_vecs) > 1:
-            stacked = torch.stack(pooled_vecs, dim=0)
-            mean_vec = stacked.mean(dim=0)
-            dev_ratio = ((stacked - mean_vec).norm(dim=-1)
-                         / mean_vec.norm(dim=-1).clamp(min=1e-12)).mean()
-            print(f"[AnimaArtistBlend] deviation gain "
-                  f"{deviation_gain}: artist deviation is "
-                  f"{float(dev_ratio) * 100:.1f}% of the shared component")
-            pooled_vecs = [mean_vec + (v - mean_vec) * float(deviation_gain)
-                           for v in pooled_vecs]
+        pooled_vecs = self._amplify_deviation(pooled_vecs, deviation_gain)
 
         blended = _blend_vectors(pooled_vecs, weights) * float(strength)
         final = torch.cat([base_tensor, blended], dim=1)
+
+        out_extra = dict(base_extra)
+        pooled = _blend_pooled(extras, weights)
+        if pooled is not None:
+            out_extra["pooled_output"] = pooled
+        return [[final, out_extra]]
+
+    # -- mode 3: one virtual token per artist --------------------------
+    def _per_artist_tokens(self, clip, base_prompt, artists, weights,
+                           full_text, strength, deviation_gain=2.0):
+        base_tensor, base_extra = _encode(clip, base_prompt)
+        base_len = base_tensor.shape[1]
+
+        pooled_vecs, extras = [], []
+        for artist in artists:
+            vec, extra = self._artist_pooled(clip, base_len, artist,
+                                             full_text)
+            pooled_vecs.append(vec)
+            extras.append(extra)
+
+        pooled_vecs = self._amplify_deviation(pooled_vecs, deviation_gain)
+
+        top = max(weights) if weights else 1.0
+        top = top if top > 0 else 1.0
+        tokens = [v * (float(w) / top) * float(strength)
+                  for v, w in zip(pooled_vecs, weights)]
+        print(f"[AnimaArtistBlend] per-artist tokens: appended "
+              f"{len(tokens)} tokens after base {base_len}")
+        final = torch.cat([base_tensor] + tokens, dim=1)
 
         out_extra = dict(base_extra)
         pooled = _blend_pooled(extras, weights)

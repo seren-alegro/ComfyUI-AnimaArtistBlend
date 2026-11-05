@@ -1,7 +1,7 @@
 [project]
 name = "ComfyUI-AnimaArtistBlend"
 description = "Blend multiple artist tags in Qwen3 0.6B hidden-state space for Anima (private test)"
-version = "0.2.1"
+version = "0.3.0"
 requires-python = ">=3.10"
 dependencies = []
 
