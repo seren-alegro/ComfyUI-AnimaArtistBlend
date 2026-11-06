@@ -7,7 +7,7 @@ answer one question experimentally:
 > Anima's Qwen3 0.6B text encoder, instead of stacking artist tags in
 > one prompt string?
 
-Short answer, measured on a real pod: **not by appending fabricated
+Short answer, measured on a real pod and macstudio: **not by appending fabricated
 tokens.** Pooled, amplified, per-artist and purity-boosted virtual
 tokens all failed to produce a perceptible style blend, while two
 approaches that stay inside real token sequences did get read — each
@@ -15,13 +15,10 @@ with its own catch. The measurements are the point of this repo.
 
 ## Test setup
 
-- ComfyUI 0.44 (SwarmUI backend) on an RTX PRO 6000 MIG 24GB pod
+- ComfyUI 0.44 (SwarmUI backend) on an RTX PRO 6000 MIG 24GB pod, mac studio m3 ultra 512gb
 - Checkpoints: Anima base v1.0 and a 2.9B hybrid merge
 - Fixed-seed controlled pairs throughout: same prompt, sampler, CFG
   and seed; only the node mode changed
-- Blend under test: `@cierra (ra-bit)` 1.5, `@nardack` or
-  `@fuzichoco` 1.35, `@wanke` 0.15, `@ask (askzy)` 0.15,
-  `@qiandaiyiyu` 0.2
 
 ## Findings
 
